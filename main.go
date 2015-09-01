@@ -1,16 +1,19 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 )
 
 func snsHandler(w http.ResponseWriter, r *http.Request) {
+	log.Printf("at=snsHandler request=%+v\n", r)
 	if r.Method != "POST" {
 		http.Error(w, "only POST accepted", http.StatusMethodNotAllowed)
 		return
@@ -69,9 +72,66 @@ func snsHandler(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("at=notification")
 	log.Printf("%s", string(body))
+
+	if forward != nil {
+		// parse body
+		type alarmReq struct {
+			Message string
+		}
+		var data alarmReq
+
+		err := json.Unmarshal(body, &data)
+		if err != nil {
+			log.Printf("at=forward:unmarshal error=%v\n", err)
+			return
+		}
+
+		var message []byte
+		message = []byte(data.Message)
+		log.Printf("at=forward:message message=%s\n", message)
+
+		req, err := http.NewRequest("POST", *forward, bytes.NewBuffer(message))
+		if err != nil {
+			log.Printf("at=forward:new_request error=%v\n", err)
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		client := &http.Client{}
+		resp, err := client.Do(req)
+		if err != nil {
+			log.Printf("at=forward:post error=%v\n", err)
+			return
+		}
+		defer resp.Body.Close()
+
+		log.Printf("at=forward:response status=%s\n", resp.Status)
+	}
 }
 
+var forward *string
+
 func main() {
+	if f := os.Getenv("FORWARD"); f != "" {
+		// validate url
+		_, err := url.Parse(f)
+		if err != nil {
+			log.Fatal("at=main:forward error=%v\n", err)
+		}
+
+		forward = &f
+		log.Println("at=main forward=" + *forward)
+	}
+
 	http.HandleFunc("/sns", snsHandler)
-	http.ListenAndServe(":"+os.Getenv("PORT"), nil)
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "3000"
+	}
+
+	addr := os.Getenv("ADDR")
+
+	log.Printf("at=main:startup listener=%s:%s", addr, port)
+	log.Fatal(http.ListenAndServe(addr+":"+port, nil))
+
 }
