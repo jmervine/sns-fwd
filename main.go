@@ -43,6 +43,19 @@ func snsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !trySubscribe(w, body) {
+
+		log.Printf("at=notification")
+		log.Printf("%s", string(body))
+
+		if forward != nil {
+			code := forwarder(body)
+			w.WriteHeader(code)
+		}
+	}
+}
+
+func trySubscribe(w http.ResponseWriter, body []byte) (tried bool) {
 	var subReq struct {
 		SubscribeURL string
 	}
@@ -50,7 +63,7 @@ func snsHandler(w http.ResponseWriter, r *http.Request) {
 	if err := json.Unmarshal(body, &subReq); err != nil {
 		log.Printf("at=decode err=%q", err)
 		http.Error(w, "decode failed", http.StatusBadRequest)
-		return
+		return true
 	}
 
 	if subReq.SubscribeURL != "" {
@@ -58,55 +71,56 @@ func snsHandler(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			log.Printf("at=hit-subscribe-error err=%q")
 			http.Error(w, "subscribe failed", http.StatusBadRequest)
-			return
+			return true
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode != 200 {
 			log.Printf("at=hit-subscribe-error err=%q", fmt.Sprintf("wanted status 200, got %d", resp.StatusCode))
 			http.Error(w, "subscribe failed", http.StatusBadRequest)
-			return
+			return true
 		}
 		log.Printf("at=hit-subscribe-success")
-		return
+		return false
 	}
 
-	log.Printf("at=notification")
-	log.Printf("%s", string(body))
+	return false
+}
 
-	if forward != nil {
-		// parse body
-		type alarmReq struct {
-			Message string
-		}
-		var data alarmReq
-
-		err := json.Unmarshal(body, &data)
-		if err != nil {
-			log.Printf("at=forward:unmarshal error=%v\n", err)
-			return
-		}
-
-		var message []byte
-		message = []byte(data.Message)
-		log.Printf("at=forward:message message=%s\n", message)
-
-		req, err := http.NewRequest("POST", *forward, bytes.NewBuffer(message))
-		if err != nil {
-			log.Printf("at=forward:new_request error=%v\n", err)
-			return
-		}
-		req.Header.Set("Content-Type", "application/json")
-
-		client := &http.Client{}
-		resp, err := client.Do(req)
-		if err != nil {
-			log.Printf("at=forward:post error=%v\n", err)
-			return
-		}
-		defer resp.Body.Close()
-
-		log.Printf("at=forward:response status=%s\n", resp.Status)
+func forwarder(body []byte) int {
+	// parse message
+	type alarmReq struct {
+		Message string
 	}
+	var data alarmReq
+
+	err := json.Unmarshal(body, &data)
+	if err != nil {
+		log.Printf("at=forward:unmarshal error=%v\n", err)
+		return 500
+	}
+
+	var message []byte
+	message = []byte(data.Message)
+	log.Printf("at=forward:message message=%s\n", message)
+
+	req, err := http.NewRequest("POST", *forward, bytes.NewBuffer(message))
+	if err != nil {
+		log.Printf("at=forward:new_request error=%v\n", err)
+		return 500
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("at=forward:post error=%v\n", err)
+		return 500
+	}
+	defer resp.Body.Close()
+
+	log.Printf("at=forward:response status=%s\n", resp.Status)
+
+	return resp.StatusCode
 }
 
 var forward *string
