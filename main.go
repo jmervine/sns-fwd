@@ -1,151 +1,122 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
+	"github.com/jmervine/sns-fwd/confirmation"
+	"github.com/jmervine/sns-fwd/forwarder"
+
 	"fmt"
 	"io/ioutil"
-	"log"
 	"net/http"
-	"net/url"
-	"os"
-	"strings"
+	"time"
+
+	"github.com/jmervine/sns-fwd/Godeps/_workspace/src/github.com/jmervine/env"
+	log "github.com/jmervine/sns-fwd/Godeps/_workspace/src/github.com/jmervine/readable"
 )
 
-func snsHandler(w http.ResponseWriter, r *http.Request) {
-	log.Printf("at=snsHandler request=%+v\n", r)
+func handler(w http.ResponseWriter, r *http.Request) {
+	begin := time.Now()
+	status := http.StatusOK // default to 200, override when error
+
+	// always log method, path, status and took when finishing
+	defer func(code int) {
+		log.Print(
+			"at=main on=handler method", r.Method,
+			"path", r.URL.Path,
+			"status", code,
+			"took", time.Since(begin),
+		)
+	}(status)
+
+	// handler http.Error and set status for use in above
+	// defer function
+	httpError := func(code int) {
+		status = code
+		http.Error(w, http.StatusText(code), code)
+	}
+
 	if r.Method != "POST" {
-		http.Error(w, "only POST accepted", http.StatusMethodNotAllowed)
+		httpError(http.StatusMethodNotAllowed)
 		return
 	}
 
-	if strings.HasSuffix(r.URL.Path, "/with-auth") {
-		u, p, ok := r.BasicAuth()
+	// handle basic auth when USERNAME and PASSWORD are set
+	username := env.Get("USERNAME")
+	password := env.Get("PASSWORD")
+
+	if username != "" && password != "" {
+		user, pass, ok := r.BasicAuth()
+
 		if !ok {
-			log.Printf("at=auth ok=false")
+			log.Print("at=main on=handler action=<req>.BasicAuth() ok=false")
+
+			// support AWS's two attempt authentication
 			w.Header().Set("WWW-Authenticate", "Basic realm=\"hello\"")
-			http.Error(w, "unauth", http.StatusUnauthorized)
+
+			httpError(http.StatusUnauthorized)
 			return
 		}
-		log.Printf("at=auth ok=true", u, p)
 
-		if !(u == "user" && p == "pass") {
-			log.Printf("at=auth ok=true creds=bad", u, p)
-			http.Error(w, "unauth", http.StatusUnauthorized)
+		log.Debug("at=main on=handler action=<req>.BasicAuth() ok=true user", user, "pass", pass)
+
+		if !(user == username && pass == password) {
+			log.Print("at=main on=handler action=<req>.BasicAuth() error", http.StatusText(http.StatusUnauthorized))
+
+			httpError(http.StatusUnauthorized)
 			return
 		}
 	}
 
+	// parse body and deal
 	body, err := ioutil.ReadAll(r.Body)
 	if err != nil {
-		log.Printf("at=read-body err=%q", err)
-		http.Error(w, "read body failed", http.StatusInternalServerError)
+		log.Print("at=main on=handler action=ioutil.ReadAll(body) error", err)
+
+		httpError(http.StatusInternalServerError)
 		return
 	}
 
-	if !trySubscribe(w, body) {
+	log.Debug("at=main on=handler body", body)
 
-		log.Printf("at=notification")
-		log.Printf("%s", string(body))
-
-		if forward != nil {
-			code := forwarder(body)
-			w.WriteHeader(code)
-		}
-	}
-}
-
-func trySubscribe(w http.ResponseWriter, body []byte) (tried bool) {
-	var subReq struct {
-		SubscribeURL string
-	}
-
-	if err := json.Unmarshal(body, &subReq); err != nil {
-		log.Printf("at=decode err=%q", err)
-		http.Error(w, "decode failed", http.StatusBadRequest)
-		return true
-	}
-
-	if subReq.SubscribeURL != "" {
-		resp, err := http.Get(subReq.SubscribeURL)
+	confirm := confirmation.Parse(body)
+	if confirm != nil {
+		err = confirm.Do()
 		if err != nil {
-			log.Printf("at=hit-subscribe-error err=%q")
-			http.Error(w, "subscribe failed", http.StatusBadRequest)
-			return true
+			log.Print("at=main on=handler action=<Confirmation>.Do() error", err)
+
+			httpError(http.StatusBadRequest)
+			return
 		}
-		defer resp.Body.Close()
-		if resp.StatusCode != 200 {
-			log.Printf("at=hit-subscribe-error err=%q", fmt.Sprintf("wanted status 200, got %d", resp.StatusCode))
-			http.Error(w, "subscribe failed", http.StatusBadRequest)
-			return true
-		}
-		log.Printf("at=hit-subscribe-success")
-		return false
+
+		log.Print("at=main on=handler action=<Confirmation>.Do() ok=true")
+		return
 	}
 
-	return false
+	fwdr := forwarder.New(body)
+	if err := fwdr.Do(); err != nil {
+		log.Print("at=main on=handler action=<Forwarder>.Do() error", err)
+		httpError(http.StatusRequestedRangeNotSatisfiable)
+	}
+
+	log.Print("at=main on=handler action=<Forwarder>.Do() ok=true")
 }
-
-func forwarder(body []byte) int {
-	// parse message
-	type alarmReq struct {
-		Message string
-	}
-	var data alarmReq
-
-	err := json.Unmarshal(body, &data)
-	if err != nil {
-		log.Printf("at=forward:unmarshal error=%v\n", err)
-		return 500
-	}
-
-	var message []byte
-	message = []byte(data.Message)
-	log.Printf("at=forward:message message=%s\n", message)
-
-	req, err := http.NewRequest("POST", *forward, bytes.NewBuffer(message))
-	if err != nil {
-		log.Printf("at=forward:new_request error=%v\n", err)
-		return 500
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Printf("at=forward:post error=%v\n", err)
-		return 500
-	}
-	defer resp.Body.Close()
-
-	log.Printf("at=forward:response status=%s\n", resp.Status)
-
-	return resp.StatusCode
-}
-
-var forward *string
 
 func main() {
-	if f := os.Getenv("FORWARD"); f != "" {
-		// validate url
-		_, err := url.Parse(f)
-		if err != nil {
-			log.Fatal("at=main:forward error=%v\n", err)
-		}
+	// load '.env' file if present
+	env.Load()
 
-		forward = &f
-		log.Println("at=main forward=" + *forward)
+	// ensure FORWARD_URL
+	if _, err := env.Require("FORWARD_URL"); err != nil {
+		log.Fatal("at=main on=env.Require error", err)
 	}
 
-	http.HandleFunc("/sns", snsHandler)
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "3000"
-	}
+	http.HandleFunc("/", handler)
 
-	addr := os.Getenv("ADDR")
+	listener := fmt.Sprintf(
+		"%s:%s",
+		env.Get("ADDR"),
+		env.GetOrSet("PORT", "3000"),
+	)
 
-	log.Printf("at=main:startup listener=%s:%s", addr, port)
-	log.Fatal(http.ListenAndServe(addr+":"+port, nil))
-
+	log.Print("at=main on=startup listener", listener)
+	log.Fatal(http.ListenAndServe(listener, nil))
 }

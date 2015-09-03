@@ -1,5 +1,21 @@
 {
-	"ImportPath": "github.com/heroku/sns-sink",
-	"GoVersion": "go1.4.2",
-	"Deps": []
+	"ImportPath": "github.com/jmervine/sns-fwd",
+	"GoVersion": "go1.5",
+	"Deps": [
+		{
+			"ImportPath": "github.com/jmervine/env",
+			"Comment": "v1-1-gf7142cd",
+			"Rev": "f7142cd3d9e770cf314f6f97eee09c84d7b15677"
+		},
+		{
+			"ImportPath": "github.com/jmervine/readable",
+			"Comment": "v1",
+			"Rev": "c225abb70b07c02d574b66e3a49f652ec5363e71"
+		},
+		{
+			"ImportPath": "github.com/joho/godotenv",
+			"Comment": "v1-8-g443e926",
+			"Rev": "443e926da0d793d3b3f32118b1e4ba52ada26503"
+		}
+	]
 }

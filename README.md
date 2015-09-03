@@ -1,23 +1,36 @@
-# sns-sink
+# sns-fwd
 
-Sinks HTTPS subscription confirmations and messages from SNS.
+Forwards HTTPS subscription confirmations and messages from SNS.
 
 Subscription confirmations are immediately accepted and received messages are logged to stdout.
 
-## Endpoints
+## Configration
 
-### `/sns`
+All configs are set via the OS Envrionment:
 
-This endpoint requires no authentication.
+- `FORWARD_URL`
+    - required forward destination
+- `FORWARD_ALARM`
+    - optional config for forwarding cloudwatch alarms in the sns notification message field only, set to `true` to enable, defaults to `false`
+- `USERNAME`
+    - optional http basic auth username
+- `PASSWORD`
+    - optional http basic auth password
+- `PORT`
+    - optional http listener port, default is `3000`
+- `ADDR`
+    - optional http listener addr
 
-### `/sns/with-auth`
+> Will only require username and password via http basic auth, when `USERNAME` and `PASSWORD` are set.
 
-This endpoint requires basic authentication, with credentials of `user` and `pass`.
-
-## Forwarding (designed around CW alarms)
-
-> Designed for forwarding message payload as json only.
+## Example
 
 ```
-FORWARD=http://some.example.com/json/api/path PORT=3000 go run main.go
+FORWARD_URL=http://some.example.com/json/api/path \
+    FORWARD_ALARM=true \
+    USERNAME=username \
+    PASSWORD=password \
+    PORT=3000 \
+    go run main.go
 ```
+

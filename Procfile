@@ -1,1 +1,1 @@
-web: sns-sink
+web: sns-fwd
